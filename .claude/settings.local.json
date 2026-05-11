@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(chmod +x /home/arc/Documents/tmp/rove_stack/capra_rove_stack/forge/run.sh)",
+      "Read(//home/arc/**)",
+      "Read(//home/arc/.local/share/**)",
+      "Bash(command -v fnm nvm volta)",
+      "Bash(env)",
+      "Bash(flatpak-spawn --host which node npm)",
+      "Read(//var/usrlocal/bin/**)",
+      "Read(//run/host/usr/bin/**)",
+      "Bash(bash -n /home/arc/Documents/tmp/rove_stack/capra_rove_stack/forge/run.sh)",
+      "Read(//run/host/usr/lib/node_modules_22/npm/bin/**)",
+      "Bash(/run/host/usr/bin/node --version)",
+      "Bash(command -v flatpak-spawn)",
+      "Bash(flatpak-spawn --host node --version)"
+    ]
+  }
+}

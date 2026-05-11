@@ -1,0 +1,19 @@
+@import "tailwindcss";
+@import "allotment/dist/style.css";
+
+:root {
+  color-scheme: dark;
+  --sash-size: 4px;
+  --focus-border: rgb(20 184 166);
+  --separator-border: rgb(39 39 42);
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+/* Allotment overrides — use zinc-800 for separators */
+.split-view-view-visible {
+  background-color: rgb(9 9 11);
+}
