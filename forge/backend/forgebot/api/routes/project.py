@@ -95,14 +95,28 @@ def get_home_pose() -> dict[str, float]:
 
 @router.put("/home-pose")
 def set_home_pose(body: dict) -> dict:
-    """Replace the project's home-pose. Pass a {joint_id: value} dict."""
+    """Replace the project's home-pose. Pass a {joint_id: value} dict.
+
+    The supplied dict is completed server-side: every movable joint
+    entity in the project gets an entry, defaulting to 0.0 when the
+    client didn't include it. The frontend's `jointValues` store is
+    sparse (untouched sliders aren't keyed), so "set current as home"
+    would otherwise produce a partial home_pose and IKEngineExporter
+    would reject it as incomplete.
+    """
     state = get_state()
+    project = state.project
     pose: dict[str, float] = {}
     for k, v in (body.get("home_pose") or {}).items():
         try:
             pose[str(k)] = float(v)
         except (TypeError, ValueError):
             continue
-    state.project.home_pose = pose
+    for eid, ent in project.scene.entities.items():
+        j = ent.get("joint")
+        if j is None or j.type not in ("revolute", "continuous", "prismatic"):
+            continue
+        pose.setdefault(eid, 0.0)
+    project.home_pose = pose
     state.events.publish("project.home_pose_changed", count=len(pose))
     return {"ok": True, "count": len(pose)}
