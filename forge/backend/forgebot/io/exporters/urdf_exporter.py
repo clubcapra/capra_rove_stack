@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import cast
 from xml.etree import ElementTree as ET
 
+from ...core.kinematics.transforms import axis_angle_to_quat
 from ...core.model import (
     Entity,
     JointComponent,
@@ -172,6 +173,17 @@ class URDFExporter(BaseExporter):
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # bake_joint_rotation: {entity_id: actuation_value} — applied to the
+        # joint's <origin> at write time so the URDF's q=0 corresponds to
+        # that joint at `actuation_value` of its actuation. Used by the
+        # IK engine exporter to push the project's home pose into the URDF
+        # itself, so a consumer that loads the URDF at q=0 sees the
+        # robot at home rather than the editor's q=0 reference pose.
+        bake_map = cast(
+            "dict[str, float] | None",
+            (options.extras.get("bake_joint_rotation") if options and options.extras else None),
+        )
+
         robot_name = project.manifest.metadata.name or "robot"
         root = ET.Element("robot", name=robot_name)
 
@@ -192,7 +204,10 @@ class URDFExporter(BaseExporter):
             if e.has("link"):
                 self._link_to_xml(root, e, mesh_suffixes, name_map)
             elif e.has("joint"):
-                self._joint_to_xml(root, e, project.scene, name_map, diagnostics)
+                bake = bake_map.get(eid) if bake_map else None
+                self._joint_to_xml(
+                    root, e, project.scene, name_map, diagnostics, bake_value=bake
+                )
 
         ET.indent(root, space="  ")
         tree = ET.ElementTree(root)
@@ -298,6 +313,7 @@ class URDFExporter(BaseExporter):
         scene: Scene,
         name_map: dict[str, str],
         diagnostics: list[Diagnostic],
+        bake_value: float | None = None,
     ) -> None:
         j = cast(JointComponent, e.get("joint"))
         t = cast(TransformComponent | None, e.get("transform")) or TransformComponent()
@@ -305,6 +321,31 @@ class URDFExporter(BaseExporter):
         urdf_type = j.type
         if urdf_type in ("ball", "floating"):
             urdf_type = "fixed"  # warned in validate_before_export
+
+        # Bake the home-pose actuation into the joint's <origin>: rotate
+        # (revolute) or translate (prismatic) by `bake_value * sign` so
+        # URDF q=0 corresponds to the editor's slider=bake_value. Only the
+        # IK-engine exporter uses this; bare URDF export passes None.
+        origin_pos = t.position
+        origin_rot = t.rotation
+        if bake_value is not None and urdf_type in ("revolute", "continuous", "prismatic"):
+            sign = -1.0 if getattr(j, "inverted", False) else 1.0
+            actuated = bake_value * sign
+            if urdf_type == "prismatic":
+                axis_len = (j.axis[0] ** 2 + j.axis[1] ** 2 + j.axis[2] ** 2) ** 0.5 or 1.0
+                delta = (
+                    j.axis[0] / axis_len * actuated,
+                    j.axis[1] / axis_len * actuated,
+                    j.axis[2] / axis_len * actuated,
+                )
+                origin_pos, origin_rot = _compose(
+                    origin_pos, origin_rot, delta, (0.0, 0.0, 0.0, 1.0)
+                )
+            else:
+                q_bake = axis_angle_to_quat(j.axis, actuated)
+                origin_pos, origin_rot = _compose(
+                    origin_pos, origin_rot, (0.0, 0.0, 0.0), q_bake
+                )
 
         # Our model splits the parent→child static transform across the
         # JOINT (rotation pivot) and the CHILD LINK (post-actuation
@@ -347,7 +388,7 @@ class URDFExporter(BaseExporter):
             f"{child_name}_pivot" if link_offset_nontrivial else child_name
         )
         joint_elem = ET.SubElement(root, "joint", name=joint_name, type=urdf_type)
-        _origin_subelem(joint_elem, t.position, t.rotation)
+        _origin_subelem(joint_elem, origin_pos, origin_rot)
         ET.SubElement(joint_elem, "parent", link=parent_name)
         ET.SubElement(joint_elem, "child", link=actuated_child)
         if j.axis != (0.0, 0.0, 0.0):

@@ -38,7 +38,11 @@ from typing import cast
 import numpy as np
 
 from ...core.kinematics.chain import extract_chain
-from ...core.kinematics.transforms import from_position_quat, identity
+from ...core.kinematics.transforms import (
+    from_position_quat,
+    identity,
+    joint_offset_transform,
+)
 from ...core.model import (
     JointComponent,
     LinkComponent,
@@ -90,10 +94,24 @@ class IKEngineExporter(BaseExporter):
             )
 
         output_path = Path(output_path)
-        output_path.mkdir(parents=True, exist_ok=True)
         diagnostics: list[Diagnostic] = []
 
-        # 1. Copy the engine template (run.py, engine/*, requirements, README).
+        # 1. Walk the chain first so we can validate home-pose coverage
+        # before touching the filesystem. The chain is the source of truth
+        # for "which joints need a home value baked in"; an incomplete
+        # home_pose would silently leave some joints at URDF-zero while
+        # the others fold to home — visibly broken in the debug GUI.
+        chain_data, chain_diags = _serialize_chain(
+            project, base, tip, home_pose=dict(project.home_pose or {})
+        )
+        diagnostics.extend(chain_diags)
+        diagnostics.extend(_validate_home_pose_coverage(project, chain_data))
+        if any(d.is_error for d in diagnostics):
+            return ExportResult(output_path=output_path, diagnostics=diagnostics)
+
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        # 2. Copy the engine template (run.py, engine/*, requirements, README).
         for src in _TEMPLATE_DIR.iterdir():
             dst = output_path / src.name
             if src.is_dir():
@@ -107,21 +125,29 @@ class IKEngineExporter(BaseExporter):
         data_dir = output_path / "data"
         data_dir.mkdir(exist_ok=True)
 
-        # 2. Build chain.json by walking the project chain.
-        chain_data, chain_diags = _serialize_chain(project, base, tip)
-        diagnostics.extend(chain_diags)
         (data_dir / "chain.json").write_text(json.dumps(chain_data, indent=2))
 
-        # 3. Profile JSON, with velocity-scaling defaults appended.
-        profile_data = _serialize_profile(project, base)
+        # 3. Profile JSON. After baking, q=0 IS the home pose, so rest_pose
+        # is filtered to the chain joints and zeroed (the null-space pull
+        # now correctly drives redundant DOFs back toward home).
+        chain_joint_ids = {j["id"] for j in chain_data["joints"] if j["type"] != "fixed"}
+        profile_data = _serialize_profile(project, base, chain_joint_ids)
         (data_dir / "ik_profile.json").write_text(
             json.dumps(profile_data, indent=2)
         )
 
         # 4. URDF + meshes/textures via the existing URDFExporter, into data/.
+        # Pass `bake_joint_rotation` so the URDF's q=0 matches chain.json's
+        # q=0 — both are "home pose" after the bake.
+        bake_map: dict[str, float] = {
+            j["id"]: float(project.home_pose.get(j["id"], 0.0))
+            for j in chain_data["joints"]
+            if j["type"] != "fixed"
+        }
         try:
             urdf_path = data_dir / "robot.urdf"
-            urdf_result = URDFExporter().export(project, urdf_path, options=None)
+            urdf_opts = ExportOptions(extras={"bake_joint_rotation": bake_map})
+            urdf_result = URDFExporter().export(project, urdf_path, options=urdf_opts)
             diagnostics.extend(urdf_result.diagnostics)
         except Exception as e:  # noqa: BLE001
             diagnostics.append(
@@ -158,12 +184,48 @@ class IKEngineExporter(BaseExporter):
 
 # ---- chain & profile serialization ----
 
+def _validate_home_pose_coverage(
+    project: Project, chain_data: dict
+) -> list[Diagnostic]:
+    """ERROR if any movable chain joint is missing from project.home_pose.
+
+    The engine bakes home_pose into chain.json's pre_xform and the
+    exported URDF's joint origins, so URDF q=0 represents the home pose.
+    A missing entry would silently bake 0 for that joint, leaving the
+    arm at home for some joints and URDF-zero for others — visibly
+    broken at startup, easy to miss in review. Force the user to
+    complete home_pose in the editor before re-exporting.
+    """
+    diags: list[Diagnostic] = []
+    home = project.home_pose or {}
+    missing = [
+        j["id"]
+        for j in chain_data["joints"]
+        if j["type"] != "fixed" and j["id"] not in home
+    ]
+    if missing:
+        diags.append(
+            Diagnostic(
+                severity=Severity.ERROR,
+                code="ik_engine.incomplete_home_pose",
+                message=(
+                    f"project.home_pose is missing {len(missing)} chain joint(s): "
+                    f"{', '.join(missing)}. Set every chain joint's home value in "
+                    "the editor (Pose ▸ Set current as home pose with the chain "
+                    "in its home configuration) and re-export."
+                ),
+            )
+        )
+    return diags
+
+
 def _serialize_chain(
-    project: Project, base: str, tip: str
+    project: Project, base: str, tip: str, home_pose: dict[str, float] | None = None
 ) -> tuple[dict, list[Diagnostic]]:
     diags: list[Diagnostic] = []
     chain = extract_chain(project, base, tip)
     scene = project.scene
+    home = home_pose or {}
 
     # We need the static parent→joint and joint→child transforms split
     # the same way the editor's FK does, so the engine produces the same
@@ -202,6 +264,18 @@ def _serialize_chain(
                 )
             )
         pre = _local_xform(j_ent)
+        # Bake project.home_pose into pre_xform: rotate by
+        # `home * sign` about the joint's axis (in joint-local frame,
+        # after the parent→joint transform). With this, engine FK at
+        # q=0 evaluates to the home pose — same convention as the
+        # exported URDF after bake_joint_rotation is applied. The
+        # morpher already sends q=0 when the arm is at encoder-home
+        # (encoder − home_deg), so the loop is now end-to-end consistent.
+        if joint.type in ("revolute", "continuous", "prismatic") and home:
+            sign = -1.0 if getattr(joint, "inverted", False) else 1.0
+            bake_val = float(home.get(jid, 0.0)) * sign
+            if bake_val != 0.0:
+                pre = pre @ joint_offset_transform(joint.type, joint.axis, bake_val)
         # The child link is the joint's child_link entity, or — in our
         # nested-entity convention — the first child of the joint in the
         # scene tree. Our model tags joint.child_link explicitly.
@@ -253,8 +327,18 @@ def _serialize_chain(
     )
 
 
-def _serialize_profile(project: Project, base: str) -> dict:
-    """Pull the project's IKProfile for `base`, plus engine-side defaults."""
+def _serialize_profile(
+    project: Project, base: str, chain_joint_ids: set[str]
+) -> dict:
+    """Pull the project's IKProfile for `base`, plus engine-side defaults.
+
+    rest_pose is filtered to the chain joints and zeroed: home is baked
+    into chain.json/pre_xform at export, so the engine's "home" is q=0
+    by construction, and the null-space pull toward rest_pose should
+    therefore pull toward zero on every chain DOF. Non-chain entries
+    from project.home_pose (e.g. wheel joints) are dropped — the engine
+    silently ignores them but writing them clutters the export.
+    """
     profile = project.ik_profiles.get(base) if project.ik_profiles else None
     out: dict[str, object] = {
         "mode": "pose_locked",
@@ -273,7 +357,7 @@ def _serialize_profile(project: Project, base: str) -> dict:
         # on the deployed engine.
         "max_lin_vel": 0.25,
         "max_ang_vel": 1.0,
-        "rest_pose": dict(project.home_pose) if project.home_pose else {},
+        "rest_pose": {jid: 0.0 for jid in chain_joint_ids},
     }
     if profile is not None:
         # Override defaults with the editor-tuned values.
