@@ -226,6 +226,11 @@
         <h2>End-effector pose (FK at q)</h2>
         <div class="pose-grid" id="ee-pose"></div>
       </section>
+
+      <section class="panel">
+        <h2>IK-commanded EE velocity (world frame)</h2>
+        <div class="pose-grid" id="ee-vel"></div>
+      </section>
     </aside>
   </main>
 
@@ -584,6 +589,18 @@ function renderPose(pos, rpy) {
   `;
 }
 
+function renderEEVel(v) {
+  const root = document.getElementById("ee-vel");
+  if (!v) { root.innerHTML = `<div class="k">linear</div><div class="v">—</div>`; return; }
+  const w = v.slice(3).map(x => x * RAD_TO_DEG);
+  root.innerHTML = `
+    <div class="k">linear</div>
+    <div class="v">x=${v[0].toFixed(4)}  y=${v[1].toFixed(4)}  z=${v[2].toFixed(4)} <span style="color:var(--dim)">m/s</span></div>
+    <div class="k">angular</div>
+    <div class="v">wx=${w[0].toFixed(2)}  wy=${w[1].toFixed(2)}  wz=${w[2].toFixed(2)} <span style="color:var(--dim)">°/s</span></div>
+  `;
+}
+
 // ---- toggles for the viewport overlay layers ---------------------
 
 document.getElementById("toggle-actual").addEventListener("change", (e) => {
@@ -634,6 +651,7 @@ async function poll() {
   renderTwist(s.twist);
   renderCmd(s.cmd, s.joints);
   renderPose(s.ee_pos, s.ee_rpy);
+  renderEEVel(s.ee_vel_world);
   document.getElementById("js-rx").textContent    = s.stats.js_rx.toLocaleString();
   document.getElementById("twist-rx").textContent = s.stats.twist_rx.toLocaleString();
   document.getElementById("cmd-tx").textContent   = s.stats.cmd_tx.toLocaleString();

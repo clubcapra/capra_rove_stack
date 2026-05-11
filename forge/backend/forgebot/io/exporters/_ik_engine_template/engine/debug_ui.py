@@ -123,6 +123,28 @@ def _snapshot(state: Any) -> dict:
         ee_pos = [0.0, 0.0, 0.0]
         ee_rpy = [0.0, 0.0, 0.0]
 
+    # Reconstruct the world-frame end-effector velocity the IK is *actually*
+    # driving toward from the last JointCommand: ee_vel = J(q) · q_dot. This
+    # is the diagnostic that tells "is IK solving correctly in URDF world
+    # frame?" apart from "is the wrapper/teleop sending twist in a different
+    # frame?". If you push +X linear on teleop and see ee_vel_world.x > 0
+    # here while the arm moves elsewhere, the IK is right and the frame
+    # mismatch is upstream (teleop or kinova base alignment).
+    ee_vel_world = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    last_cmd_for_jac = getattr(state, "last_cmd", None)
+    if last_cmd_for_jac is not None and int(last_cmd_for_jac.mode) == 0:
+        try:
+            import numpy as np
+            J, _ = ik_math.jacobian(chain, state.q)
+            qd_by_id = {j.name: float(j.value) for j in last_cmd_for_jac.joints}
+            qdot = np.array(
+                [qd_by_id.get(j.id, 0.0) for j in chain.movable], dtype=np.float64
+            )
+            v = (J @ qdot).tolist()
+            ee_vel_world = [float(x) for x in v]
+        except Exception:  # noqa: BLE001
+            pass
+
     joints = [
         {
             "id": j.id,
@@ -179,6 +201,7 @@ def _snapshot(state: Any) -> dict:
         "cmd": cmd,
         "ee_pos": ee_pos,
         "ee_rpy": ee_rpy,
+        "ee_vel_world": ee_vel_world,
         "ts": {
             "last_joint_state_us": int(getattr(state, "last_joint_state_us", 0)),
             "last_twist_us": int(getattr(state, "last_twist_us", 0)),
