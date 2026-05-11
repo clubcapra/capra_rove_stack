@@ -13,24 +13,25 @@ FRONTEND_DIR="$SCRIPT_DIR/frontend"
 
 TARGET="${1:-all}"
 
-# Locate a binary by name. If not on PATH, probe common locations (flatpak host,
-# user-local installs, nvm/fnm, system) and prepend the directory to PATH.
+# Are we inside a flatpak sandbox? If so, npm/node usually live on the host.
+IN_FLATPAK=0
+if [ -f "/.flatpak-info" ] || [ -n "${FLATPAK_ID:-}" ]; then
+  IN_FLATPAK=1
+fi
+
+# NPM_CMD is either "npm" or "flatpak-spawn --host npm" depending on env.
+NPM_CMD=""
+
+# Locate a binary by name on PATH or in common install dirs (nvm/fnm/local).
 ensure_on_path() {
   local name="$1"
   if command -v "$name" >/dev/null 2>&1; then
     return 0
   fi
-  local candidates=(
-    "/run/host/usr/local/bin/$name"
-    "/run/host/usr/bin/$name"
-    "/run/host/home/$USER/.local/bin/$name"
-    "$HOME/.local/bin/$name"
-    "/usr/local/bin/$name"
-  )
-  # nvm / fnm — pick the highest-versioned install
-  local nvm_dir
-  for nvm_dir in "$HOME/.nvm/versions/node"/*/bin "$HOME/.fnm/node-versions"/*/installation/bin "$HOME/.local/share/fnm/node-versions"/*/installation/bin; do
-    [ -x "$nvm_dir/$name" ] && candidates+=("$nvm_dir/$name")
+  local candidates=("$HOME/.local/bin/$name" "/usr/local/bin/$name")
+  local d
+  for d in "$HOME/.nvm/versions/node"/*/bin "$HOME/.fnm/node-versions"/*/installation/bin "$HOME/.local/share/fnm/node-versions"/*/installation/bin; do
+    [ -x "$d/$name" ] && candidates+=("$d/$name")
   done
   local c
   for c in "${candidates[@]}"; do
@@ -51,13 +52,20 @@ require_python() {
 }
 
 require_node() {
-  if ! ensure_on_path node || ! ensure_on_path npm; then
-    echo "error: node/npm not found." >&2
-    echo "       If you're inside the VS Code flatpak, install Node on the host" >&2
-    echo "       (dnf install nodejs / nvm) and re-run, or run this script from" >&2
-    echo "       a host terminal where 'npm' is on PATH." >&2
-    exit 1
+  if ensure_on_path npm; then
+    NPM_CMD="npm"
+    return 0
   fi
+  if [ "$IN_FLATPAK" = "1" ] && command -v flatpak-spawn >/dev/null 2>&1; then
+    if flatpak-spawn --host sh -c 'command -v npm >/dev/null 2>&1'; then
+      echo "[env] using host npm via flatpak-spawn"
+      NPM_CMD="flatpak-spawn --host --watch-bus --env=PATH=$PATH:/usr/local/bin:/usr/bin:$HOME/.local/bin npm"
+      return 0
+    fi
+  fi
+  echo "error: node/npm not found on PATH or host." >&2
+  echo "       Install Node 20+ (dnf install nodejs / nvm / fnm) and retry." >&2
+  exit 1
 }
 
 run_backend() {
@@ -79,12 +87,12 @@ run_frontend() {
   cd "$FRONTEND_DIR"
   echo "[frontend] syncing npm deps..."
   if [ -f "package-lock.json" ]; then
-    npm install --no-audit --no-fund --silent --prefer-offline
+    $NPM_CMD install --no-audit --no-fund --silent --prefer-offline
   else
-    npm install --no-audit --no-fund --silent
+    $NPM_CMD install --no-audit --no-fund --silent
   fi
   echo "[frontend] starting vite on http://127.0.0.1:5173"
-  exec npm run dev
+  exec $NPM_CMD run dev
 }
 
 case "$TARGET" in

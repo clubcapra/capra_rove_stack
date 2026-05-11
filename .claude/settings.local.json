@@ -13,7 +13,8 @@
       "Read(//run/host/usr/lib/node_modules_22/npm/bin/**)",
       "Bash(/run/host/usr/bin/node --version)",
       "Bash(command -v flatpak-spawn)",
-      "Bash(flatpak-spawn --host node --version)"
+      "Bash(flatpak-spawn --host node --version)",
+      "Bash(flatpak-spawn --host npm --version)"
     ]
   }
 }
