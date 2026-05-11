@@ -110,6 +110,42 @@ def _origin_subelem(parent: ET.Element, xyz: tuple[float, float, float], rot: tu
     ET.SubElement(parent, "origin", xyz=_xyz_str(xyz), rpy=_xyz_str(rpy))
 
 
+def build_urdf_name_map(
+    project: Project, diagnostics: list[Diagnostic] | None = None
+) -> dict[str, str]:
+    """Stable entity_id → URDF-safe unique-name map.
+
+    Module-level so the IK-engine exporter can compute the same names
+    URDFExporter will emit and write them into chain.json (otherwise
+    the debug GUI's joint-name lookups collide on duplicate display
+    names and only the first matching URDF joint gets driven).
+    """
+    used: set[str] = set()
+    name_map: dict[str, str] = {}
+    for eid, e in project.scene.entities.items():
+        if not (e.has("link") or e.has("joint")):
+            continue
+        base = (e.name or eid).strip() or eid
+        base = base.replace(" ", "_").replace("/", "_")
+        candidate = base
+        i = 2
+        while candidate in used:
+            candidate = f"{base}_{i}"
+            i += 1
+        if candidate != base and diagnostics is not None:
+            diagnostics.append(
+                Diagnostic(
+                    severity=Severity.INFO,
+                    code="urdf.renamed_for_uniqueness",
+                    message=f"renamed {base!r} → {candidate!r} for URDF (names must be unique)",
+                    entity_id=eid,
+                )
+            )
+        name_map[eid] = candidate
+        used.add(candidate)
+    return name_map
+
+
 def _geometry_to_xml(parent: ET.Element, g: Geometry, mesh_suffix_lookup: dict[str, str]) -> None:
     geom_elem = ET.SubElement(parent, "geometry")
     if g.mesh:
@@ -222,34 +258,8 @@ class URDFExporter(BaseExporter):
     def _build_unique_names(
         project: Project, diagnostics: list[Diagnostic]
     ) -> dict[str, str]:
-        """Map entity id → URDF-safe unique name. Duplicates get `_2, _3, …`
-        suffixes; spaces and slashes in the user's name are stripped. We
-        log a warning whenever a rename happens so the user knows the
-        emitted name differs from the editor's display."""
-        used: set[str] = set()
-        name_map: dict[str, str] = {}
-        for eid, e in project.scene.entities.items():
-            if not (e.has("link") or e.has("joint")):
-                continue
-            base = (e.name or eid).strip() or eid
-            base = base.replace(" ", "_").replace("/", "_")
-            candidate = base
-            i = 2
-            while candidate in used:
-                candidate = f"{base}_{i}"
-                i += 1
-            if candidate != base:
-                diagnostics.append(
-                    Diagnostic(
-                        severity=Severity.INFO,
-                        code="urdf.renamed_for_uniqueness",
-                        message=f"renamed {base!r} → {candidate!r} for URDF (names must be unique)",
-                        entity_id=eid,
-                    )
-                )
-            name_map[eid] = candidate
-            used.add(candidate)
-        return name_map
+        """Delegate to the module-level helper so IK-engine export can use it."""
+        return build_urdf_name_map(project, diagnostics)
 
     # ----- helpers -----
 

@@ -51,7 +51,7 @@ from ...core.model import (
 )
 from ...core.validation.rules import Diagnostic, Severity
 from .base import BaseExporter, ExportOptions, ExportResult
-from .urdf_exporter import URDFExporter
+from .urdf_exporter import URDFExporter, build_urdf_name_map
 
 _log = logging.getLogger(__name__)
 
@@ -226,6 +226,12 @@ def _serialize_chain(
     chain = extract_chain(project, base, tip)
     scene = project.scene
     home = home_pose or {}
+    # Use the same name-disambiguation URDFExporter applies, so chain.json's
+    # `name` field equals the URDF's joint name verbatim. The debug GUI's
+    # idToName map collapses duplicate names — without this, 5 sibling
+    # "joint_revolute" entities all map to the first URDF joint and the
+    # other 4 stay at home regardless of cmd/state.
+    urdf_names = build_urdf_name_map(project, None)
 
     # We need the static parent→joint and joint→child transforms split
     # the same way the editor's FK does, so the engine produces the same
@@ -295,7 +301,7 @@ def _serialize_chain(
         movable_joints.append(
             {
                 "id": jid,
-                "name": j_ent.name or jid,
+                "name": urdf_names.get(jid, j_ent.name or jid),
                 "type": joint.type,
                 "axis": list(joint.axis),
                 "lower": lim_lower,
