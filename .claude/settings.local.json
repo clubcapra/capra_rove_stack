@@ -14,7 +14,9 @@
       "Bash(/run/host/usr/bin/node --version)",
       "Bash(command -v flatpak-spawn)",
       "Bash(flatpak-spawn --host node --version)",
-      "Bash(flatpak-spawn --host npm --version)"
+      "Bash(flatpak-spawn --host npm --version)",
+      "Bash(chmod +x /home/capra/data/capra_rove_stack/capra_roboguard/rove_control_bridge/install.sh /home/capra/data/capra_rove_stack/capra_roboguard/rove_control_bridge/uninstall.sh)",
+      "Bash(systemctl status *)"
     ]
   }
 }
