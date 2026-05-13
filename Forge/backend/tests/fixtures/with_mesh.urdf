@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<robot name="with_mesh">
+  <link name="base_link">
+    <inertial>
+      <mass value="1.0"/>
+      <inertia ixx="0.01" iyy="0.01" izz="0.01" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <geometry>
+        <mesh filename="tiny.stl"/>
+      </geometry>
+    </visual>
+  </link>
+</robot>
