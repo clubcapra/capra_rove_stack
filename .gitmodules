@@ -1,6 +1,3 @@
-[submodule "capra_jetson_stack"]
-	path = capra_jetson_stack
-	url = https://github.com/clubcapra/capra_jetson_stack.git
 [submodule "capra_roboguard"]
 	path = capra_roboguard
 	url = https://github.com/clubcapra/capra_roboguard.git
